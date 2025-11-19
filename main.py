@@ -22,6 +22,30 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 set_log_level("INFO")
 
+# Monkey patch Model.from_name 以支持 gemini-3-pro
+_original_from_name = Model.from_name
+
+@classmethod
+def _patched_from_name(cls, name: str):
+	"""扩展的 from_name 方法，支持 gemini-3-pro"""
+	if name == "gemini-3-pro":
+		# 创建一个模拟的 Model 对象
+		custom_model = object.__new__(cls)
+		custom_model._name_ = 'G_3_PRO'
+		custom_model._value_ = (
+			"gemini-3-pro",
+			{"x-goog-ext-525001261-jspb": '[1,null,null,null,"e6fa609c3fa255c0",null,null,0,[4]]'},
+			False,
+		)
+		custom_model.model_name = "gemini-3-pro"
+		custom_model.model_header = {"x-goog-ext-525001261-jspb": '[1,null,null,null,"e6fa609c3fa255c0",null,null,0,[4]]'}
+		custom_model.advanced_only = False
+		logger.info("✅ Using custom gemini-3-pro model")
+		return custom_model
+	return _original_from_name(name)
+
+Model.from_name = _patched_from_name
+
 app = FastAPI(title="Gemini API FastAPI Server")
 
 # Add CORS middleware
