@@ -65,6 +65,7 @@ SECURE_1PSID = os.environ.get("SECURE_1PSID", "")
 SECURE_1PSIDTS = os.environ.get("SECURE_1PSIDTS", "")
 API_KEY = os.environ.get("API_KEY", "")
 ENABLE_THINKING = os.environ.get("ENABLE_THINKING", "false").lower() == "true"
+COOKIE_REFRESH_API = os.environ.get("COOKIE_REFRESH_API", "")  # Cookie 刷新 API 地址
 
 # Print debug info at startup
 if not SECURE_1PSID or not SECURE_1PSIDTS:
@@ -84,6 +85,35 @@ if not API_KEY:
 	logger.warning("Make sure API_KEY is correctly set in your .env file or environment.")
 else:
 	logger.info(f"API_KEY found. API_KEY starts with: {API_KEY[:5]}...")
+
+
+async def refresh_cookies():
+	"""从 Cookie 刷新 API 获取新的 cookies"""
+	if not COOKIE_REFRESH_API:
+		logger.error("COOKIE_REFRESH_API not configured")
+		return None
+
+	try:
+		import httpx
+		async with httpx.AsyncClient(timeout=30.0) as client:
+			logger.info(f"Calling cookie refresh API: {COOKIE_REFRESH_API}")
+			response = await client.get(COOKIE_REFRESH_API)
+			response.raise_for_status()
+			data = response.json()
+
+			# 假设 API 返回格式: {"SECURE_1PSID": "...", "SECURE_1PSIDTS": "..."}
+			new_psid = data.get("SECURE_1PSID")
+			new_psidts = data.get("SECURE_1PSIDTS")
+
+			if new_psid and new_psidts:
+				logger.info("✅ Successfully refreshed cookies")
+				return new_psid, new_psidts
+			else:
+				logger.error("Invalid cookie format from refresh API")
+				return None
+	except Exception as e:
+		logger.error(f"Failed to refresh cookies: {str(e)}")
+		return None
 
 
 def correct_markdown(md_text: str) -> str:
@@ -332,9 +362,11 @@ async def get_gemini_client():
 
 @app.post("/v1/chat/completions")
 async def create_chat_completion(request: ChatCompletionRequest, api_key: str = Depends(verify_api_key)):
+	from gemini_webapi.exceptions import AuthError
+
 	try:
 		# 确保客户端已初始化
-		global gemini_client
+		global gemini_client, SECURE_1PSID, SECURE_1PSIDTS
 		if gemini_client is None:
 			gemini_client = GeminiClient(SECURE_1PSID, SECURE_1PSIDTS)
 			await gemini_client.init(timeout=300)
@@ -349,14 +381,34 @@ async def create_chat_completion(request: ChatCompletionRequest, api_key: str = 
 		model = map_model_name(request.model)
 		logger.info(f"Using model: {model}")
 
-		# 生成响应
+		# 生成响应（带自动重试）
 		logger.info("Sending request to Gemini...")
-		if temp_files:
-			# With files
-			response = await gemini_client.generate_content(conversation, files=temp_files, model=model)
-		else:
-			# Text only
-			response = await gemini_client.generate_content(conversation, model=model)
+		try:
+			if temp_files:
+				response = await gemini_client.generate_content(conversation, files=temp_files, model=model)
+			else:
+				response = await gemini_client.generate_content(conversation, model=model)
+		except AuthError as auth_err:
+			logger.warning(f"AuthError detected: {str(auth_err)}")
+			logger.info("Attempting to refresh cookies...")
+
+			# 尝试刷新 cookies
+			new_cookies = await refresh_cookies()
+			if new_cookies:
+				SECURE_1PSID, SECURE_1PSIDTS = new_cookies
+				# 重新创建客户端
+				gemini_client = GeminiClient(SECURE_1PSID, SECURE_1PSIDTS)
+				await gemini_client.init(timeout=300)
+				logger.info("Client reinitialized with new cookies, retrying request...")
+
+				# 重试请求
+				if temp_files:
+					response = await gemini_client.generate_content(conversation, files=temp_files, model=model)
+				else:
+					response = await gemini_client.generate_content(conversation, model=model)
+			else:
+				logger.error("Failed to refresh cookies, cannot retry")
+				raise auth_err
 
 		# 清理临时文件
 		for temp_file in temp_files:
