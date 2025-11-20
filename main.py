@@ -101,9 +101,18 @@ async def refresh_cookies():
 			response.raise_for_status()
 			data = response.json()
 
-			# 假设 API 返回格式: {"SECURE_1PSID": "...", "SECURE_1PSIDTS": "..."}
-			new_psid = data.get("SECURE_1PSID")
-			new_psidts = data.get("SECURE_1PSIDTS")
+			# 解析 Cookie API 返回的格式: {"cookies": [{"name": "...", "value": "..."}, ...]}
+			cookies = data.get("cookies", [])
+
+			# 从 cookies 数组中提取需要的值
+			new_psid = None
+			new_psidts = None
+
+			for cookie in cookies:
+				if cookie.get("name") == "__Secure-1PSID":
+					new_psid = cookie.get("value")
+				elif cookie.get("name") == "__Secure-1PSIDTS":
+					new_psidts = cookie.get("value")
 
 			if new_psid and new_psidts:
 				logger.info("✅ Successfully refreshed cookies")
